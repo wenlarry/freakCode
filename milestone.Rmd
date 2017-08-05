@@ -1,0 +1,475 @@
+
+---
+title:  "Capstone Milestone - Word Predictor"
+author: "wenlarry"
+date:   "4/9/2017"
+output: html_document
+---
+## Overview
+
+This milestone reports the progress towards creating a natural language  processing (NLP) algorithm. It starts with raw data from SwiftKey to be processsed into a text prediction algorithm that could be accessed through a shiny application. 
+
+This milestone sequentially covers:
+
+- Data downloads and initial wrangling
+- Sampling
+- Preview Sampling Data
+- Preprocessing/Data Cleaning
+- Tokenization (Vocabulary Vectorization) 
+- Construct Document Term Matirx (DTM) 
+- Exploratory Data Analysis with N_grams
+- Testing with GloVe algorithm 
+- What's Next ?
+
+## Data Loading 
+
+- Library - readr
+
+- Download the data, unzipped and placed only the English version of the 
+  blog.txt, news.txt and twitter.txt into a folder (dat)  
+
+- Import the 3 datasets using readLines with 'skipNul=T' as some of the 
+  datasets have embedded 'nul'
+
+- Ascertain the size of the datasets
+
+- Download swear word list from www.bannedwordlist.com and convert to text
+  for subsequent filter of profanities
+
+- Snippets of the Codes are shown below:
+
+- File Size
+
+```{r dat, echo=FALSE} 
+library(readr) 
+
+blog<- readLines("dat/en_US.blogs.txt", encoding="UTF-8",skipNul=T)
+twitter <- readLines("dat/en_US.twitter.txt",encoding="UTF-8",skipNul=T) 
+news <- readLines("dat/en_US.news.txt",encoding="UTF-8",skipNul=T)  
+
+fileSize<- c(file.info("dat/en_US.blogs.txt")[1,c('size')] ,
+             file.info("dat/en_US.twitter.txt")[1,c('size')],
+             file.info("dat/en_US.news.txt")[1,c('size')] )
+             
+stat<-data.frame(name=c('blog','twitter','news'),
+                  bytes=fileSize,
+                  num_lines=c(length(blog),
+                              length(twitter),
+                              length(news))) 
+
+stat['gb']<-stat['bytes']/107341824
+stat
+rm(fileSize)
+
+```
+
+```{r sw, echo=FALSE, message=FALSE, warning=FALSE} 
+download.file(url="http://www.bannedwordlist.com/lists/swearWords.txt",
+              destfile="swearWord.txt",method="curl")
+
+swearWord<-readLines("swearWord.txt") 
+
+```
+
+```{r sdat, eval=FALSE, message=FALSE, warning=FALSE}
+twitter <- readLines("dat/en_US.twitter.txt",encoding="UTF-8",skipNul=T) 
+
+stat<-data.frame(name=c('blog','twitter','news'),
+                  bytes=fileSize,
+                  num_lines=c(length(blog),
+                              length(twitter),
+                              length(news))) 
+
+stat['gb']<-stat['bytes']/107341824
+
+download.file(url="http://www.bannedwordlist.com/lists/swearWords.txt",
+              destfile="swearWord.txt",method="curl")
+
+```
+
+## Sampling
+
+Given the large datasets, we decide to sample 20% plus of the total lines of the 3 datasets.
+
+Snippets of the Codes are shown below:
+
+```{r sample, echo=FALSE} 
+set.seed(0409)
+
+blogSample<-sample (blog,200000)
+twitterSample<-sample(twitter,500000)
+newsSample<-sample(news,200000)
+
+```
+
+```{r ssample, eval=FALSE}
+blogSample<-sample (blog,200000)
+
+``` 
+
+## Sampling Data Preview
+
+Here is an extract from twitterSample
+
+```{r psample, echo=FALSE}
+set.seed (0409) 
+twitterSample<-sample(twitter, 500000) 
+tail (twitterSample, 1)  
+
+rm(blog,news,twitter) 
+
+```
+
+Libraries - Quanteda; ggplot2
+
+We primarily use Quanteda package to combine the sample datasets and plot the dispersion A corpus of the combined 3 datasets would be created for plotting a lexical dispersion plot with ggplot2.
+
+The lexical dispersion plot shows that the blogSample has more tokens than the other 2 sample datasets. As the data have yet to be cleaned, the initial takeaway is that the blogSample contains more different words than the other 2 samples. This is possible.
+
+Another reason for choosing a lexical dispersion plot is because you can just supply the actual word and get the frequencies, in terms of tokens, across all the 3datasets. This is useful for future tweaks in improving your algorithm.
+(Just substitute "Words" in the code with your chosen word to get the tokens
+ across all 3 datasets) .
+
+Snippets of the codes are shown below:
+
+```{r plot, echo=FALSE} 
+suppressMessages (library  (quanteda))
+suppressMessages (library  (ggplot2) ) 
+
+Qsample<-corpus(c(blogSample=paste(blogSample,collapse=" "),
+                  newsSample=paste(newsSample,collapse =" "),
+                  twitterSample=paste(twitterSample,collapse=" ")))
+ 
+g<-textplot_xray(kwic(Qsample,"Tokens"),
+                 
+                 kwic(Qsample,"Words")) 
+
+g+aes(color=keyword) +scale_color_manual(values=c('red', 'blue') ) 
+
+rm(Qsample) 
+
+```
+
+```{r psample2, eval=FALSE}
+g<-textplot_xray(kwic(Qsample,"Tokens"),
+                 
+                 kwic(Qsample,"Words")) 
+
+g+aes(color=keyword) +scale_color_manual(values=c('red', 'blue') ) 
+
+# Qsample is the combined 3 sample data sets (i.e blogSample, newsSample,   #twitterSample) 
+
+```
+
+## Preprocessing / Data Cleaning 
+
+We begin with some basic cleaning that involves:
+
+- Substitution of short form English words to long forms (fullEng)
+- Remove all non alpha English characters except quotes and hyphens (cleanText)
+- Remove hash tags, etc from twitter.txt (untwitter) 
+
+Snippets of the codes are shown below
+
+```{r clean, echo=FALSE} 
+suppressMessages (library(text2vec) ) 
+suppressMessages (library(SnowballC) ) 
+
+hashClean<-function(t){
+        t<-gsub('#','',t) 
+        return(t) 
+}
+twitterClean<-function(t){
+        t<-gsub('http\\S+\\s*','',t)
+        t<-gsub('#\\S+\\s*','',t)
+        t<-gsub('\\brt\\b','',t)
+        t<-gsub('\\bu\\b','you',t)
+        return(t) 
+}
+
+fullEng<-function(t){
+        t<-gsub(pattern="can't",replacement="cannot", t)
+        t<-gsub(pattern=" 'm",replacement="am",t)
+        t<-gsub(pattern="ain't",replacement="am not",t)
+        t<-gsub(pattern=" 're",replacement="are",t) 
+        t<-gsub(pattern=" 've'",replacement="have",t)
+        t<-gsub(pattern=" 'd",replacement="would",t)
+        t<-gsub(pattern=" 'll",replacement ="will",t)
+        t<-gsub(pattern="n't",replacement="not",t)
+        t<-gsub(pattern="what's",replacement="what is",t)
+        t<-gsub(pattern="won't",replacement="will not",t)
+        return(t) 
+}
+
+textClean<-function(t){
+        t<-gsub("[^a-z -\\']","",t) 
+        return(t) 
+}        
+
+```
+
+```{r sclean, eval=FALSE} 
+hashClean<-function(t){
+        t<-gsub('#','',t) 
+        return(t) 
+}
+twitterClean<-function(t){
+        t<-gsub('http\\S+\\s*','',t)
+        return(t) 
+}
+fullEng<-function(t){
+        t<-gsub(pattern="won't",replacement="will not",t)
+        return(t) 
+}
+
+```
+
+## Tokenization (Vocabulary Vectorization) 
+
+We use the text2vec package from this stage forward. We choose this package because texts take up a lot of memory, but vectorized texts usually do not, as they are stored as sparse matrices. R's copy-on-modify semantics read the whole collection of text documents into RAM and then process it as a single vector. This increase the memory and text2vec is the choice for a fast and memory friendly process.
+
+(The creator of text2vec has provided comprehensive notes for usage. The notes  contain examples and codes for tokenization, stemming, dtm creation ,etc. 
+ Google: 'Analyzing text with text2vec package R') 
+ 
+We do not stem at this stage as we care more about the efficacies of the ngrams that we are consructing. We can always stem at the next stage should we need to improve on the algorithm to process the text more effectively.
+
+When we clean/tokenize and apply the function to our Samples, we note that the time taken is only 18 minutes with text2vec. This step takes the most processing time in the whole exercise.
+
+Snippets of the codes are shown below 
+
+```{r token, echo=FALSE, message=FALSE}
+xtokenizer<-function(v,tokenizer=word_tokenizer){
+ v%>%
+  hashClean%>%
+  twitterClean%>%
+  fullEng%>%
+  textClean%>%
+  tokenizer
+}  
+
+tokens<-c(paste(blogSample,collapse=" "),
+          paste(newsSample,collapse=" "),
+          paste(twitterSample,collapse="")
+          )%>%
+          tolower%>%
+          xtokenizer
+          
+
+names(tokens)<-c("blogSample","newsSample","twitterSample")
+
+```
+
+```{r stoken, eval=FALSE}
+# paste cleaned toens to Samples
+xtokenizer<-function(v,tokenizer=word_tokenizer){
+ v%>%
+  hashClean%>%
+  twitterClean%>%
+  fullEng%>%
+  textClean%>%
+  tokenizer
+} 
+
+```
+
+## Document Term Matrix (DTM) 
+
+We build 'stopwords' list to pass through the vocabulary creation function. This is because 'stopwords' can only be filtered after tokenization. Concurrently, we strip swear words from the tokens using the 'swearWord' list that was built earlier. (This fulfills the requirement to remove profanities from the text). 
+
+We create the iterator on the tokens and generate the vocabulary from the iterator.
+
+Snippets of the Codes are shown below:
+
+```{r sdtm, eval=FALSE} 
+stopwords<-c("i","my", "me","myself","we","our","ours","ourselves","you",
+             "your","yours")
+
+swsw<-c(stopwords,swearWord) 
+
+it<-itoken(tokens) 
+vocab<-create_vocabulary(it,ngram=c(1L,1L),stopwords=swsw)
+
+pruned_vocab=prune_vocabulary(vocab,term_count_min=2, doc_proportion_max = 0.5)
+
+it<-itoken(tokens)
+v_vectorizer<-vocab_vectorizer(pruned_vocab) 
+dtm<-create_dtm(it,v_vectorizer)
+
+```
+
+```{r dtm, echo=FALSE, message=FALSE, warning=FALSE}
+stopwords<-c("i","my", "me","myself","we","our","ours","ourselves","you",
+             "your","yours")
+
+swsw<-c(stopwords,swearWord) 
+
+it<-itoken(tokens) 
+vocab<-create_vocabulary(it,ngram=c(1L,1L),stopwords=swsw)
+
+pruned_vocab=prune_vocabulary(vocab,term_count_min=2,doc_proportion_max = 0.5)
+
+it<-itoken(tokens)
+v_vectorizer<-vocab_vectorizer(pruned_vocab) 
+dtm1<-create_dtm(it,v_vectorizer)
+
+```
+
+## Build Unigram, Bigram and Trigram
+
+We construct the Unigram, Bigram and Trigram as frequency tables, in descending order.
+
+We plot top terms that fit the 3 ngrams.
+
+We observe no irregularities and the 3 ngrams could potentially be used to build the algorithm.
+
+Snippets of the codes are given below. Just repeat the codes for unigram and bigram.
+
+```{r pug, echo=FALSE, message=FALSE, warning=FALSE}
+# unigram
+freq <- sort(colSums(as.matrix(dtm1)), decreasing=TRUE)
+wf <- data.frame(term=names(freq), freq=freq)
+
+subset(wf, freq>100)     %>%
+        ggplot(aes(term, freq)) +
+        geom_bar(stat="identity", fill="green",colour="green")+
+        theme(axis.text.x=element_text(angle=45, hjust=1.0))+
+        labs(title= "Unigram")
+
+```
+
+
+```{r bg, echo=FALSE, message=FALSE, warning=FALSE}
+#bigram
+it<-itoken(tokens) 
+vocab<-create_vocabulary(it,ngram=c(2L,2L),stopwords=swsw)
+
+pruned_vocab=prune_vocabulary(vocab,term_count_min=2)
+
+it<-itoken(tokens)
+v_vectorizer<-vocab_vectorizer(pruned_vocab) 
+dtm2<-create_dtm(it,v_vectorizer)
+
+```
+
+```{r pbg, echo=FALSE, message=FALSE, warning=FALSE}
+freq <- sort(colSums(as.matrix(dtm2)), decreasing=TRUE)
+wf <- data.frame(term=names(freq), freq=freq)
+
+subset(wf, freq>15000)    %>%
+        ggplot(aes(term, freq)) +
+        geom_bar(stat="identity", fill="yellow",colour="yellow")+
+        theme(axis.text.x=element_text(angle=45, hjust=1))+
+        labs(title= "Bigram")
+
+```
+
+```{r tg, echo=FALSE, message=FALSE, warning=FALSE} 
+#trigram
+it<-itoken(tokens) 
+vocab<-create_vocabulary(it,ngram=c(3L,3L),stopwords=swsw)
+
+pruned_vocab=prune_vocabulary(vocab,term_count_min=2)
+
+it<-itoken(tokens)
+v_vectorizer<-vocab_vectorizer(pruned_vocab) 
+dtm3<-create_dtm(it,v_vectorizer)
+
+```
+
+```{r ptg, echo=FALSE, message=FALSE, warning=FALSE}  
+freq <- sort(colSums(as.matrix(dtm3)), decreasing=TRUE)
+wf <- data.frame(term=names(freq), freq=freq)
+
+subset(wf, freq>2000)    %>%
+        ggplot(aes(term, freq)) +
+        geom_bar(stat="identity", fill="orange", colour="orange")+
+        theme(axis.text.x=element_text(angle=45, hjust=1))+
+        labs(title= "Trigram") 
+
+```
+
+
+```{r stg, eval=FALSE, message=FALSE} 
+# trigram
+freq <- sort(colSums(as.matrix(dtm3)), decreasing=TRUE)
+wf <- data.frame(term=names(freq), freq=freq)
+# Plot 
+subset(wf, freq>2500)    %>%
+        ggplot(aes(term, freq)) +
+        geom_bar(stat="identity", fill="orange", colour="orange")+
+        theme_minimal()+labs(title= "Trigram") 
+```
+## Exploratory Data Analysis
+
+N-gram model is a type of probablistic lingusitic model for predicting the  next item in a sequence in the form of a n-1 order. The 2 benefits in using n-gram model and the algorithm that use them are simplicity and scalability. With larger n, a model can store more context.
+
+The terms in the unigram , bigram and trigram are 152673 (3.7mg)
+4012986 (116.4mb) and 4864461 (145.6mb) respectively.
+We can see these data from the values output in RStudio.
+
+The final output (shiny app) is constrained by 1 gigabyte of data, so we still have space to expand our sample, build more ngrams, etc, if improvements are required.
+
+## Test with GloVe Algorithm
+
+GloVe is an unsupervised learning algorithm for obtaining vectore representations for words. See (http://nip.Stanford.edu/projects/glove/).
+
+GloVe is in the text2vec package. We follow through and construct a Term Cooccurence Matrix (TCM) instead of the DTMs. We apply the TCM to the Quiz to get the probabilites of the predicted word (i.e the correct answer). We obtain an 80% accuracy of the predicted words. This suggest that the sample size, the constructed ngrams are sufficiently robust, albeit futher tweaks are needed for a more accurate algorithm.
+
+(The creator of text2Vec has provided comprehensive notes, examples and codes for GloVe. Google ('Analyzing text with text2vec package R ).
+
+Snippets of the Codes are shown below:
+
+```{r test, eval=FALSE, message=FALSE, warning=FALSE} 
+# Follow through with all previous codes before DTM construction.
+pvocab=prune_vocabulary(vocab,term_count_min=5L)
+
+it<-itoken(tokens)
+
+cooccurence_vectorizer<-vocab_vectorizer(pvocab,grow_dtm = FALSE,
+                                         skip_grams_window=5L)
+
+tcm<-create_tcm(it,cooccurence_vectorizer)
+
+glove=GlobalVectors$new(word_vectors_size=100, vocabulary=vocab,x_max=10) 
+
+fit(tcm,glove,n_iter=20) 
+
+word_vectors<-glove$get_word_vectors() 
+
+# build the word vectors
+novels<-word_vectors["stories",,drop=FALSE]-
+        word_vectors["pictures",,drop=FALSE]   -
+        word_vectors["movies",, drop=FALSE] -
+        word_vectors["almost",, drop=FALSE]
+
+cos_sim=sim2(x=word_vectors,y=novels,method="cosine",norm="l2")
+
+head(sort(cos_sim[,1],decreasing =TRUE),5) 
+
+# probabilities would be shown against each word provided
+
+```
+
+## Next Step ?
+
+- Refine GloVe algorithm and test it with more texts.
+
+- Should the GloVe algorithm be a challenge, we would revert to a conventional 
+  back-off model to construct the algorithm. In this eventuality, we plan to 
+  use the Katz Back-Off (KBO) model.
+  
+- Build the shiny app as the front end device for the next word prediction.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
